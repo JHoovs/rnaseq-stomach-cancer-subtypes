@@ -1,0 +1,888 @@
+---
+title: "RNA-Seq Exploratory Data Analysis"
+author: "Jacob Hoover"
+format:
+  html:
+    self-contained: true
+  pdf:
+    toc: true
+    number-sections: true
+---
+
+# EDA
+
+Explore [stomach]{.underline} cancer cell lines in CCLE. How many biologically distinct groups can you reasonably define? What do the gene expression profiles of each group tell us about the biology of each group?
+
+# Load Libraries
+
+```{r, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+# Data wrangling
+library(tidyr)
+library(dplyr)
+
+# Bioconductor
+library(DESeq2)
+library(ComplexHeatmap)
+library(biomaRt)
+
+# Data visualization
+library(ggrepel)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(EnhancedVolcano)
+
+```
+
+# Prepare Data
+
+First, the counts data, `dat1`, and annotation data, `ann1`, are read in with the first 5 rows displayed as a sanity check.
+
+```{r, echo=TRUE, results='hide'}
+# read in counts and metadata
+
+dat1 <- read.table("data/CCLE_RNAseq_genes_counts_20180929.gct.gz",
+                header=TRUE,
+                skip=2)
+
+ann1 <- read.csv("data/Cell_lines_annotations_20181226.txt",
+                header=TRUE,
+                sep="\t")
+
+# Sanity Check
+head(dat1, 5)
+head(ann1, 5)
+```
+
+The row names of `dat1` are set to the `Description` column which contains the hgnc_symbols of each gene. The `Name` and `Description` columns of `dat1` are removed so the dataframe only holds count data.
+
+```{r}
+
+# Set Description to rownames and sum duplicates before removing
+gene_names <- dat1$Description
+dat1 <- dat1[, !(colnames(dat1) %in% c("Name","Description"))]
+dat1 <- rowsum(dat1, group = gene_names)
+
+cat("Number of genes in counts data:", dim(dat1)[1], "\n", "Number of samples in counts data:", dim(dat1)[2])
+
+```
+
+```{r}
+
+cat("Number of cell lines in metadata:", dim(ann1)[1], "\n", "Number of features in metadata:", dim(ann1)[2])
+
+```
+
+Below are the 33 features of the cell lines stored in the metadata. This is reduced to ten columns that may be impactful on the RNA-seq count data.
+
+```{r}
+print(colnames(ann1))
+
+# Keep important metadata columns
+ann2 <- ann1[ , c("CCLE_ID", "depMapID", "Name", "Pathology", "Site_Primary", "Histology", "Gender", "Age", "Site_Of_Finding", "tcga_code")]
+
+```
+
+Preprocessing continues by identifying NA, NaN, and Null values within `ann2`. Each column is looped through and all identified values are replaced with `missing info`.
+
+```{r}
+
+# Check NA/NaN/Null values
+cat("Total NA values:", sum(is.na(ann2)))
+cat("Total NaN values:", sum(is.nan(as.matrix(ann2))))
+cat("Total Null values:", sum(sapply(ann2, is.null)))
+
+for (col in colnames(ann2)) {
+  na_count <- sum(is.na(ann2[[col]]))
+  cat(col, ":", na_count, "\n")
+}
+
+# Replace NA values
+ann2[is.na(ann2)] <- "missing info"
+
+# Sanity check
+sum(is.na(ann2))
+
+```
+
+The cell lines are stored as rows in `ann2` and as columns in `dat1`. This requires the ordering and merging of the two dataframes by their `CCLE_ID` so that the expression counts and annotation features align for each cell line.
+
+```{r}
+print(sum(ann2$CCLE_ID %in% colnames(dat1)))
+
+# Order counts with metadata by CCLE_ID
+order_counts <- colnames(dat1) %in% ann2$CCLE_ID
+dat1 <- dat1[ ,order_counts]
+
+# Order metadata with counts
+order_meta  <- ann2$CCLE_ID %in% colnames(dat1)
+ann2 <- ann2[order_meta, ]
+
+# Merge ordered datasets
+dat_counts <- dat1[ ,ann2$CCLE_ID]
+
+```
+
+The `Site_Primary` feature is used to identify the different cancer cell lines stored in the dataframes. This column is used as indices to extract `stomach` cancer cell lines and subset the count and annotation dataframes so that they only contain these samples. There are now 54,271 genes and 36 samples.
+
+```{r}
+
+# subset by cell line tissue
+print(unique(ann2$Site_Primary))
+
+# Matrix of stomach cell lines
+index_stomach <- ann2[ann2$Site_Primary == "stomach", ]
+dim(index_stomach)
+
+# Look at values for other features
+print(index_stomach$Pathology)
+print(index_stomach$Site_Of_Finding)
+
+# subset by stomach IDs
+dat_subset <- dat_counts[ ,index_stomach$CCLE_ID]
+ann_subset <- ann2[ann2$CCLE_ID %in% index_stomach$CCLE_ID, ]
+
+# Class variable
+print(unique(ann_subset$Pathology))
+
+# Sanity check
+all(index_stomach$CCLE_ID %in% colnames(dat_subset))
+dim(dat_subset)
+head(dat_subset[,1:4])
+```
+
+Now, filter the rows of `dat_subset` so that it only contains `protein_coding` and `lncRNA` genes. I am particularly interested in long noncoding RNAs (lncRNAs) and want to analyze there differential expression in stomach cancer cell lines. This retrieves a vector of 59,758 genes with either of the two biotypes. Of these, 19,306 genes were also in the `dat_subset` counts matrix.
+
+```{r}
+
+# Use Ensembl database and "hsapiens_gene_ensembl" dataset 
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+biotype_vals <- c("protein_coding", "lncRNA")
+
+# Retrieve protein coding and lncRNA genes w/ attributes
+coding_and_lncrna <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
+  filters = "biotype",
+  values = biotype_vals,
+  mart = ensembl
+)
+
+# Extract the "hgnc_symbol" column from the list of coding genes
+coding_gene_ids <- coding_and_lncrna$hgnc_symbol
+length(coding_gene_ids)
+
+# Filter the "ccle_counts" data frame to keep genes from list
+dat_subset <- dat_subset[rownames(dat_subset) %in% coding_gene_ids, ]
+dim(dat_subset)
+
+# Convert the filtered data frame to a standard data frame 
+dat_subset <- data.frame(dat_subset)
+
+cat("There are now", dim(dat_subset)[1], "genes.")
+
+```
+
+The last step of preprocessing uses a low count threshold to identify those genes with less than 100 counts across all 36 samples. The 2,129 genes falling below this threshold are removed to prevent the influence of outliers. All values in the filtered counts matrix are checked for missing or duplicated data to ensure the final matrix is ready for further analysis.
+
+```{r}
+# Number of genes with low counts
+low_counts <- sum(rowSums(dat_subset) < 100)
+cat("Number of genes with low counts:", low_counts)
+
+# filter out low count genes
+dat_filtered <- dat_subset[rowSums(dat_subset) >= 100, ]
+
+# Check NA/NaN/Null values
+cat("Total NA values:", sum(is.na(dat_filtered)))
+cat("Total NaN values:", sum(is.nan(as.matrix(dat_filtered))))
+cat("Total Null values:", sum(sapply(dat_filtered, is.null)))
+
+# Check duplicate samples and genes
+cat("Number of duplicate samples:", sum(duplicated(colnames(dat_filtered))))
+cat("Number of duplicate genes:", sum(duplicated(rownames(dat_filtered))))
+
+
+cat("Analysis will be performed on", nrow(dat_filtered), "genes and", ncol(dat_filtered), unique(ann_subset$Site_Primary), "samples.")
+
+```
+
+DESeq2 is used to create a dataset object from `dat_filtered` and `ann_subset`, with the design formula focused on the `Pathology` feature. Distribution statistics are performed on the raw data counts from the DESeq2 object. To analyze the data distribution, gene expression mean vs. variance is plotted in `p1` and displays heteroscedasticity, or the increase in variance with the increase in mean. In `p2`, mean vs. coefficient of variation (CV) shows that lowly expressed genes have higher relative variability (CV), making them less stable and more prone to technical noise, while highly expressed genes exhibit more stable relative expression patterns. Together, these plots provide quality control insights and justify the need for variance-stabilizing transformation (vst).
+
+```{r}
+
+dds <- DESeqDataSetFromMatrix(countData = dat_filtered,
+                              colData = ann_subset,
+                              design = ~ Pathology)
+
+vsd <- vst(dds, blind=FALSE)
+
+dat_means <- rowMeans(counts(dds))
+dat_sd <- apply(counts(dds), 1, sd)
+dat_var <- apply(counts(dds), 1, var)
+dat_cv <- dat_sd / dat_means
+
+df_raw <- data.frame(
+  mean = dat_means,
+  sd = dat_sd,
+  var = dat_var,
+  cv = dat_cv
+)
+
+p1 <- ggplot(df_raw, aes(x = log10(mean + 1), y = log10(var + 1))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  labs(
+    x = "Log10 Mean Counts",
+    y = "Log10 Variance",
+    title = "Gene Mean vs Variance (raw counts)"
+  ) +
+  theme_minimal()
+
+p2 <- ggplot(df_raw, aes(x = log10(mean + 1), y = log10(cv + 1))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  labs(
+    x = "Log10 Mean Counts",
+    y = "Log10 CV",
+    title = "Gene Mean vs Coefficient of Variation (raw counts)"
+  ) +
+  theme_minimal()
+
+p1 + p2
+```
+
+The same distribution statistics are now performed on the variance-stabilizing transform counts to visualize the data after normalization. The purpose is to reduce variance occurring from the extent of the average gene expression so that truly differential genes, regardless of large or small mean expression, can be identified.
+
+```{r}
+
+vst_means <- rowMeans(assay(vsd))
+vst_sd <- apply(assay(vsd), 1, sd)
+vst_var <- apply(assay(vsd), 1, var)
+vst_cv <- vst_sd / vst_means
+
+df_vst <- data.frame(
+  mean = vst_means,
+  sd = vst_sd,
+  var = vst_var,
+  cv = vst_cv
+)
+
+p3 <- ggplot(df_vst, aes(x = log10(mean + 1), y = log10(var + 1))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  labs(
+    x = "Log10 Mean Counts",
+    y = "Log10 Variance",
+    title = "Gene Mean vs Variance (VST)"
+  ) +
+  theme_minimal()
+
+p4 <- ggplot(df_vst, aes(x = log10(mean + 1), y = log10(cv + 1))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  labs(
+    x = "Log10 Mean Counts",
+    y = "Log10 CV",
+    title = "Gene Mean vs Coefficient of Variation (VST)"
+  ) +
+  theme_minimal()
+
+(p1 + p2) / (p3 + p4)
+
+
+```
+
+The code below demonstrates another way of visualizing the effect of normalizing raw count data. Genes with average expression localized in the 20th and 80th percentile are selected to show how this normalization affects genes with both low and high expression. The subsequent plots show reduction in the technical noise (counts) by the variance-stabilizing transformation and its effective achievement of homoscedasticity.
+
+```{r, message=FALSE, warning=FALSE}
+
+percentile_a <- quantile(dat_means, 0.799)
+percentile_b <- quantile(dat_means, 0.801)
+percentile_c <- quantile(dat_means, 0.199)
+percentile_d <- quantile(dat_means, 0.201)
+
+low_genes <- names(dat_means[dat_means >= percentile_c & dat_means < percentile_d])
+
+print(low_genes)
+
+high_genes <- names(dat_means[dat_means >= percentile_a & dat_means < percentile_b])
+
+print(high_genes)
+
+df_low_sig <- data.frame(
+  Gene = rep(low_genes, each = ncol(counts(dds))),
+  Raw_counts = as.vector(counts(dds)[low_genes, ]),
+  VST_counts = as.vector(assay(vsd)[low_genes, ])
+)
+
+df_high_sig <- data.frame(
+  Gene = rep(high_genes, each = ncol(counts(dds))),
+  Raw_counts = as.vector(counts(dds)[high_genes, ]),
+  VST_counts = as.vector(assay(vsd)[high_genes, ])
+)
+
+df_long_low <- df_low_sig %>% pivot_longer(cols = c(Raw_counts, VST_counts), 
+               names_to = "Count_Type", values_to = "Count_Value")
+
+df_long_high <- df_high_sig %>% pivot_longer(cols = c(Raw_counts, VST_counts), 
+               names_to = "Count_Type", values_to = "Count_Value")
+
+p5 <- ggplot(df_long_low, aes(x = Count_Type, y = Count_Value, fill = Count_Type)) +
+  geom_boxplot(outlier.shape = NA, width = 0.5) +
+  geom_jitter(width = 0.2, alpha = 0.2, size = 0.1) +
+  scale_y_log10() +
+  labs(title = "Comparison of Raw vs. VST Counts for 35 Lowly Expressed Genes",
+       x = "",
+       y = "log10(Expression Level)") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+p6 <- ggplot(df_long_high, aes(x = Count_Type, y = Count_Value, fill = Count_Type)) +
+  geom_boxplot(outlier.shape = NA, width = 0.5) +
+  geom_jitter(width = 0.2, alpha = 0.2, size = 0.1) +
+  scale_y_log10() +
+  labs(title = "Comparison of Raw vs. VST Counts for 35 Highly Expressed Genes",
+       x = "",
+       y = "log10(Expression Level)") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+p5/p6
+```
+
+# Principal Component Analysis
+
+To kick off principal component analysis (PCA), a quick PCA plot is generated using the normalized counts object, the `Pathology` feature, and the top 500 genes.
+
+```{r}
+plotPCA(vsd, intgroup = "Pathology", ntop = 500)
+```
+
+After visualizing the top two principal components, `PC1` and `PC2`, there does not appear to be any clear separation explained by `Pathology`. This could mean pathology differences are not driving variation in the data, but higher PCs may better explain this variance. Currently, `PC1` is found to explain 31% of the variance and `PC2` explains 9%. Below is a scree plot to identify the amount of variance explained by higher PCs, and visualize where the "elbow" occurs.
+
+```{r}
+
+top_genes_var <- order(vst_var, decreasing=TRUE)[1:500]
+
+var_mat <- assay(vsd)[top_genes_var, ]
+
+pca_res <- prcomp(t(var_mat), center=TRUE, scale=FALSE)
+
+explained_pca_var <- pca_res$sdev^2 / sum(pca_res$sdev^2) * 100
+
+df_variance <- data.frame(PC=seq_len(10), var = explained_pca_var[1:10])
+
+p7 <- ggplot(df_variance, aes(x=PC, y=var)) +
+  geom_line() + 
+  geom_point(size=2)+
+  xlab("Principal Component") + 
+  ylab("Variance Explained") +
+  ggtitle("Scree Plot (Line Plot)") +
+  ylim(0, 100) +
+  scale_x_continuous(breaks = 1:10) +
+  theme_minimal()
+
+p8 <- ggplot(df_variance, aes(x=PC, y=var)) +
+  geom_col() +
+  xlab("Principal Component") + 
+  ylab("Variance Explained") +
+  ggtitle("Scree Plot (Bar Graph)") +
+  ylim(0, 100) +
+  scale_x_continuous(breaks = 1:10) +
+  theme_minimal()
+
+p7 + p8
+```
+
+Now, let's try plotting `PC3` and `PC4` to see if these components better explain `Pathology` impact on variance.
+
+```{r}
+pca_df <- data.frame(PC3 = pca_res$x[, 3], PC4 = pca_res$x[, 4], ann_subset)
+
+p9 <- ggplot(pca_df, aes(x = PC3, y = PC4, color = Pathology)) +
+  geom_point(size = 3) +
+  labs(title = "PC3 vs PC4",
+       x = paste0("PC3: ", round(explained_pca_var[3], 1), "% variance"),
+       y = paste0("PC4: ", round(explained_pca_var[4], 1), "% variance")) +
+  theme_minimal()
+
+p9
+```
+
+These do not show separation explained by `Pathology` either. Let's try a few other features like `Gender` and `Site_Of_Finding`.
+
+```{r}
+p10 <- plotPCA(vsd, intgroup = "Gender", ntop = 500)
+
+p10
+```
+
+```{r}
+p11 <- plotPCA(vsd, intgroup = "Site_Of_Finding", ntop = 500)
+
+p11
+```
+
+The use of PCA is to capture the largest sources of variation. It does not appear that the largest sources of variation are clearly separated or explained by one of the feature variables in the metadata. This could be due to the variance being explained by features not captured in our subset data like unknown subtypes within pathology, batch effects, sample dates, timing, or other technical noise. Despite this, we can continue investigating the differential expression of the genes driving these principal components.
+
+```{r, echo=TRUE, results='hide'}
+
+as.data.frame(pca_res$rotation)
+```
+
+```{r}
+
+pc1_genes <- pca_res$rotation[,1]
+top_pc1_genes <- names(sort(pc1_genes, decreasing=TRUE)[1:6])
+print(top_pc1_genes)
+
+df_pc1_genes <- data.frame(t(assay(vsd)[top_pc1_genes, ]))
+
+df_pc1_long <- df_pc1_genes %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Gene",
+    values_to = "Expression"
+  )
+
+p12 <- ggplot(df_pc1_long, aes(x = Gene, y = Expression)) +
+  geom_boxplot(aes(fill = Gene), alpha = 0.5) +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.5) +
+  labs(title = "Expression of Top PC1 Genes",
+       x = "Gene",
+       y = "Expression (VST)") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p12
+
+```
+
+The top 6 genes driving PC1 show differential expression above. Let's now see how these appear in relation to the separation shown between `PC1` and `PC2` using `pcaPlot`.
+
+```{r}
+
+df_pc <- data.frame(PC1 = pca_res$x[, 1], PC2 = pca_res$x[, 2], ann_subset)
+
+df_long_top <- data.frame(
+  df_pc1_genes,
+  df_pc[,c("PC1", "PC2", "Pathology")]
+)
+
+df_long_genes <- pivot_longer(
+  df_long_top,
+  cols = all_of(top_pc1_genes),
+  names_to = "Gene",
+  values_to = "Expression"
+  )
+
+p13 <- ggplot(df_long_genes, aes(x = PC1, y = PC2, color = Expression)) +
+  geom_point(size = 2, alpha = 0.5) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_classic() +
+  labs(x = paste0("PC1: ", round(explained_pca_var[1], 1), "% variance"), 
+       y = paste0("PC2: ", round(explained_pca_var[2], 1), "% variance"),
+       color = "Expression (VST)") +
+  facet_wrap(~ Gene)
+
+p13
+```
+
+Analyzing the 6 genes plotted on `PC1` and `PC2`, it is clear that differential expression aligns with sample grouping. The sample group on the left appears to have lower expression values than the second group appearing on the right. This suggests these genes are major contributors to a biological difference between samples groups, but `Pathology`, `Gender`, and `Site_Of_Finding` do not appear to explain the variance.
+
+# Hierarchical Clustering
+
+Let's continuing exploring the data and the separation seen between the two sample groupings in the genes with the most `PC1` variance. Below hierarchical clustering is used to cluster the RNA-seq samples with similar gene expression profiles.
+
+```{r, fig.height=10, fig.width=8}
+
+top50_var <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 50)
+top50_var_mat <- assay(vsd)[top50_var, ]
+
+hc <- hclust(dist(t(top50_var_mat)), method = "complete")
+clusters <- cutree(hc, k = 2)
+
+p14 <- Heatmap(top50_var_mat,
+        color = colorRamp2(c(min(top50_var_mat), 
+                          median(top50_var_mat), 
+                          max(top50_var_mat)), 
+                        c("blue", "white", "red")),
+        clustering_distance_columns = "euclidean",
+        clustering_method_columns = "complete",
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "complete",
+        show_row_names = TRUE,
+        show_column_names = FALSE,
+        name = "VST_Counts",
+        column_split = clusters)
+
+p14
+
+```
+
+The cluster above clearly shows two clusters with near opposite gene expression profiles. Let's confirm this isn't being explained by one of the features from PCA by annotating the dendrogram.
+
+```{r, fig.height=10, fig.width=8}
+
+ann_subset_df <- ann_subset
+ann_subset_df <- ann_subset_df %>% dplyr::select("Pathology", "Site_Of_Finding", "Gender")
+
+sample_annotation_colors <- list(
+  Pathology = c("primary" = "black", "metastasis" = "grey60"),
+  Site_Of_Finding = c("lymph_node" = "#1F77B4", 
+                      "muscle" = "#FF7F0E", 
+                      "liver" = "#2CA02C", 
+                      "ascites" = "#D62728", 
+                      "pleura" = "#9467BD", 
+                      "unknown" = "#D3D3D3", 
+                      "NS" = "#7F7F7F"),
+  Gender = c("male" = "#0072B2",        
+             "female" = "#CC79A7",      
+             "missing_info" = "#999999")
+)
+
+col_annotation <- HeatmapAnnotation(
+  df = ann_subset_df,
+  col = sample_annotation_colors
+  )
+
+p15 <- Heatmap(top50_var_mat,
+        color = colorRamp2(c(min(top50_var_mat), 
+                          median(top50_var_mat), 
+                          max(top50_var_mat)), 
+                        c("blue", "white", "red")),
+        clustering_distance_columns = "euclidean",
+        clustering_method_columns = "complete",
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "complete",
+        show_row_names = TRUE,
+        show_column_names = FALSE,
+        name = "VST_Counts",
+        column_split = clusters,
+        top_annotation = col_annotation)
+
+p15
+
+```
+
+There still does not appear to be a relationship between annotated cell line features selected and the sample clusters. We need to figure out if the clusters found in hierarchical clustering relate to the sample separation in PCA. Below, genes are assigned and colored by their cluster and plotted with `PC1` and `PC2`.
+
+```{r}
+
+df_pc$Cluster2 <- as.factor(clusters)
+
+p16 <- ggplot(df_pc, aes(x = PC1, y=PC2, color=Cluster2)) +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = hue_pal()(length(unique(clusters)))) +
+  theme_classic() +
+  labs(x = paste0("PC1: ", round(explained_pca_var[1], 1), "% variance"), 
+       y = paste0("PC2: ", round(explained_pca_var[2], 1), "% variance"),
+       color = "Cluster")
+
+p16
+
+```
+
+The PCA plot shows the clusters perfectly match the separation previously seen. This confirms the biological effect is not method-specific and there is a hidden variable that is biologically meaningful. But, before moving on let's confirm there aren't additional clusters that may better align with the variables we have viewed so far (`Pathology`, `Gender`, `Site_Of_Finding`).
+
+```{r, fig.height=20, fig.width=8}
+
+top300_var <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 300)
+top300_var_mat <- assay(vsd)[top300_var, ]
+
+hc <- hclust(dist(t(top300_var_mat)), method = "complete")
+clusters_300 <- cutree(hc, k = 3)
+
+p17 <- Heatmap(top300_var_mat,
+        color = colorRamp2(c(min(top300_var_mat), 
+                          median(top300_var_mat), 
+                          max(top300_var_mat)), 
+                        c("blue", "white", "red")),
+        clustering_distance_columns = "euclidean",
+        clustering_method_columns = "complete",
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "complete",
+        show_row_names = FALSE,
+        row_names_gp = gpar(fontsize = 8),
+        show_column_names = FALSE,
+        name = "VST_Counts",
+        column_split = clusters_300,
+        top_annotation = col_annotation)
+
+p17
+
+```
+
+The dendrogram above visualizes expression profile clusters for the top 300 genes. It is split by an additional cluster (k=3) to eliminate the possibility of another separating biological effect within the data. Let's check the PCA plot again now with three clusters on the top 300 genes.
+
+```{r}
+
+df_pc$Cluster3 <- as.factor(clusters_300)
+
+p18 <- ggplot(df_pc, aes(x = PC1, y=PC2, color=Cluster3)) +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = hue_pal()(length(unique(clusters_300)))) +
+  theme_classic() +
+  labs(x = paste0("PC1: ", round(explained_pca_var[1], 1), "% variance"), 
+       y = paste0("PC2: ", round(explained_pca_var[2], 1), "% variance"),
+       color = "Cluster")
+
+p18
+
+```
+
+It appears there may be an explainable variation between `Cluster 1` and `Cluster 2` by `PC2`. To finalize our analysis and uncover the biological explanation, the last steps will focus on differential expression analysis to identify how the top differentially expressed genes (DEGs) relate to the gene expression clusters separating samples.
+
+# Differential Expression Analysis
+
+This uses the DESeq function to run the entire DESeq2 pipeline, with the design formula `Cluster,` so we can view the DEGs between the two clusters.
+
+```{r, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+
+ann_subset$Cluster <- factor(clusters)
+
+dds <- DESeqDataSetFromMatrix(countData = dat_filtered,
+                              colData = ann_subset,
+                              design = ~ Cluster)
+
+dds$Cluster <- relevel(dds$Cluster, ref=2)
+
+dds <- DESeq(dds)
+
+```
+
+The quality control and dispersion estimation step verifies proper normalization, models biological variability, and ensures reliable statistical testing in RNA-seq data. This is similar to the steps performed to show plots `p1-p4`. It confirms normalization by comparing raw and scaled counts, estimates gene-specific dispersion to capture variability, and fits a mean–variance curve across all genes. Visual assessments show that most genes follow expected dispersion patterns, validating DESeq2’s assumptions and ensuring accurate detection of differential expression.
+
+```{r}
+# Examine size factors
+print(sizeFactors(dds))
+
+# Check raw versus normalized sample expression sums
+print(colSums(counts(dds)))
+print(colSums(counts(dds, normalized=TRUE)))
+
+mean_counts <- rowMeans(counts(dds))
+variance_counts <- apply(counts(dds), 1, var)
+
+# Visualize gene-wise dispersion for QC
+df_dispersion <- data.frame(
+  mean = mcols(dds)$baseMean,
+  var = mcols(dds)$baseVar,
+  disp = mcols(dds)$dispersion,
+  fitted = mcols(dds)$dispFit
+)
+
+df_dispersion <- df_dispersion[complete.cases(df_dispersion) & df_dispersion$mean > 0, ]
+
+# Calculate reasonable dispersion estimates for visualziation
+df_dispersion$ratio <- df_dispersion$disp / df_dispersion$fitted
+df_dispersion$reasonable <- abs(log2(df_dispersion$ratio)) < 1
+
+p19 <- ggplot(df_dispersion, aes(x = log10(mean + 1), y = log10(var + 1))) +
+  geom_point(alpha = 0.3, color = "blue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red", fill = "pink") +
+  labs(
+    x = "Log10 Mean Counts",
+    y = "Log10 Variance",
+    title = "Gene Mean vs Variance (raw counts)"
+  ) +
+  theme_minimal()
+
+# Expected value of dispersion for genes of given mean strength
+p20 <- ggplot(df_dispersion, aes(x = mean, y = disp)) +
+  geom_point(aes(color = reasonable), alpha = 0.5, size = 1) +
+  geom_line(aes(y = fitted), color = "red", size = 1.2) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "gray"),
+                     name = "Reasonable dispersion",
+                     labels = c("TRUE" = "Within 2-fold of expected", "FALSE" = "Outlier")) +  
+  labs(
+    x = "Mean of normalized counts",
+    y = "Dispersion",
+    title = "DESeq2 Dispersion Estimates"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p19 + p20
+```
+
+The `plotDispEsts` function shows the raw mean–variance relationship across genes, the fitted dispersion curve, and how individual gene estimates align with the expected trend. This plot confirms that DESeq2 has successfully modeled biological variability and that most genes fall within the expected range, supporting reliable differential expression analysis.
+
+```{r}
+
+# Data dispersion estimates to assess model fit
+p21 <- plotDispEsts(dds)
+
+```
+
+Now that we know the data has been reliably normalized, let's run the differential expression analysis.
+
+```{r}
+res <- results(dds)
+print(res)
+```
+
+```{r}
+summary(res)
+```
+
+The results summary show that there is almost a 2:1 activation rate, 25% upregulated and 12% downregulated, among the significant differentially expressed genes. Quality indicators show data preprocessing was successful as there were 0% `outliers`, 0.0058% `low counts`, and 37% of genes were considered significant. This strongly suggests transcriptional reprogramming is occurring between the hidden condition. Let's investigate the genes with the largest expression change.
+
+```{r}
+
+res_ordered <- res %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "gene_symbol") %>%
+  filter(padj < 0.001) %>%
+  arrange(desc(abs(log2FoldChange)))
+
+(head(res_ordered, 10))
+```
+
+```{r}
+
+degs <- c("MUC17", "LYZ", "REG4", "MAGEA10", "ADAMTS12", "NPFFR2")
+degs_vsd <- data.frame(t(assay(vsd)[degs, ]))
+
+df_degs_long <- data.frame(
+  degs_vsd,
+  df_pc[,c("PC1", "PC2")]
+)
+
+df_degs_pivot <- pivot_longer(
+  df_degs_long,
+  cols = all_of(degs),
+  names_to = "Gene",
+  values_to = "Expression"
+)
+
+p22 <- ggplot(df_degs_pivot, aes(x = PC1, y = PC2, color = Expression)) +
+  geom_point(size = 2, alpha = 0.5) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_classic() +
+  labs(x = paste0("PC1: ", round(explained_pca_var[1], 1), "% variance"), 
+       y = paste0("PC2: ", round(explained_pca_var[2], 1), "% variance"),
+       color = "Expression (VST)") +
+  facet_wrap(~ Gene)
+
+p22
+```
+
+These top 6 genes perfectly align with the PC1 separation and the cluster separation shown from hierarchical clustering. This confirms these are major contributors to the biological variation between sample clusters. `LYZ`, `MUC17`, and `REG4` all are upregulated in cluster 2. `ADAMTS12`, `MAGEA10`, and `NPFFR2` all downregulate in cluster 2.
+
+```{r}
+top_degs_up <- res_ordered %>%
+  arrange(desc(log2FoldChange)) %>%
+  head(10)
+
+top_degs_down <- res_ordered %>%
+  arrange(log2FoldChange) %>%
+  head(10)
+
+label_genes <- c(top_degs_up$gene_symbol, top_degs_down$gene_symbol)
+
+p23 <- EnhancedVolcano(res_ordered,
+                x = "log2FoldChange",
+                y = "padj",
+                lab = res_ordered$gene_symbol,
+                selectLab = label_genes,
+                pCutoff = 0.00001,
+                FCcutoff = 2,
+                labSize = 3.5,
+                title = "Cluster 1 vs Cluster 2 DEGs",
+                subtitle = "Top 20 most significant DEGs (padj < 1e-5, |FC| > 2)",
+                caption = "",
+                pointSize = 2,
+                colAlpha = 0.6,
+                drawConnectors = TRUE,
+                widthConnectors = 0.3,
+                max.overlaps = 20,
+                col = c("grey30", "forestgreen", "royalblue", "red2"),
+                colCustom = NULL,
+                cutoffLineType = "dashed",
+                cutoffLineCol = "black",
+                cutoffLineWidth = 0.5,
+                hline = c(1e-5, 1e-10),
+                hlineCol = c("grey30", "grey30"),
+                hlineType = c("dotted", "longdash"),
+                hlineWidth = c(0.5, 0.5)
+                ) +
+  theme_classic() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(size = 10))
+
+p23
+```
+
+The volcano plot is an excellent visualization for identifying highly significant genes. The points in grey are considered non-significant genes. Green points are those genes with only significant `log2FoldChange`. Blue points are those with only significant `p-value`. Red signals genes that are highly significant in both metrics, and those furthest from the dashed lines are the most extreme up- and downregulated genes.
+
+```{r}
+print(label_genes)
+```
+
+As mentioned previously, I'm interested in investigating lncRNAs with significant differences in expression between sample clusters to identify their biological importance in stomach cancer cell lines. Let's view all lncRNA genes in a volcano plot and label the top 10 DEGs.
+
+```{r}
+
+res_annotated <- res_ordered %>%
+  left_join(coding_and_lncrna, by = c("gene_symbol" = "hgnc_symbol"))
+
+lnc_RNA_res <- res_annotated %>%
+  filter(gene_biotype == "lncRNA") %>%
+  arrange(desc(abs(log2FoldChange)))
+
+lnc_RNA_counts <- sum(res_annotated$gene_biotype == "lncRNA")
+print(lnc_RNA_counts)
+
+top_lncRNA_degs <- head(lnc_RNA_res, 10)
+print(top_lncRNA_degs)
+
+```
+
+```{r}
+
+p24 <- EnhancedVolcano(lnc_RNA_res,
+                x = "log2FoldChange",
+                y = "padj",
+                lab = lnc_RNA_res$gene_symbol,
+                selectLab = top_lncRNA_degs$gene_symbol,
+                pCutoff = 0.00001,
+                FCcutoff = 2,
+                labSize = 3.5,
+                title = "Top lncRNA DEGs",
+                subtitle = "Top 10 most significant DEGs (padj < 1e-5, |FC| > 2)",
+                caption = "",
+                pointSize = 2,
+                colAlpha = 0.6,
+                drawConnectors = TRUE,
+                widthConnectors = 0.3,
+                max.overlaps = 20,
+                col = c("grey30", "forestgreen", "royalblue", "red2"),
+                colCustom = NULL,
+                cutoffLineType = "dashed",
+                cutoffLineCol = "black",
+                cutoffLineWidth = 0.5,
+                hline = c(1e-5, 1e-10),
+                hlineCol = c("grey30", "grey30"),
+                hlineType = c("dotted", "longdash"),
+                hlineWidth = c(0.5, 0.5)
+                ) +
+  theme_classic() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(size = 10))
+
+p24
+```
+
+# Interpretation
+
+Comprehensive differential expression and clustering analyses identify two biologically distinct subtypes of gastric cancer cell lines.
+
+The first represents a differentiated epithelial–intestinal program, marked by elevated expression of secretory mucins (MUC17, MUC5AC, REG4), brush-border genes, and adhesion molecules. This suggests maintenance of intestinal differentiation and epithelial function.
+
+The second exhibits a dedifferentiated, mesenchymal-like state, enriched for cancer-testis antigens (MAGEA4/10), extracellular matrix remodelers (ADAMTS12), WNT-associated long noncoding RNAs (WNT5A-AS1, LINC00645), and neural guidance factors, consistent with epithelial–mesenchymal transition, immune evasion, and invasive potential.
+
+This provides a biologically sound framework for therapeutic exploration because while epithelial-differentiated tumors may benefit from epithelial-targeted approaches, dedifferentiated tumors may be more applicable to immunotherapies directed at cancer-testis antigens or inhibitors of WNT/EMT signaling.
+
+Therapeutic exploration may based on these subtype-defining DEGs and lncRNAs include drug discovery, prognostic biomarkers, and proteomics. They can guide subtype-specific therapeutic targeting (e.g., WNT/EMT or CT antigens), inform predictive biomarker panels and liquid biopsy assays, and support integrative proteogenomics to uncover protein-level mechanisms. They also provide opportunities for immune profiling, regulatory network modeling, and single-cell validation to refine cell-of-origin hypotheses.
