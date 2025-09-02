@@ -91,11 +91,13 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
    ```bash
    git clone https://github.com/JHoovs/stomach-cancer-rnaseq-analysis.git
    cd stomach-cancer-rnaseq-analysis
+   ```
 
 2. Open R and install required packages:
    ```bash
   install.packages(c("tidyverse", "ggplot2", "patchwork"))
   BiocManager::install(c("DESeq2", "ComplexHeatmap", "biomaRt", "EnhancedVolcano"))
+  ```
 
 4. Knit the RMarkdown (.Rmd) file or run the provided code chunks to reproduce results.
 
@@ -108,4 +110,5 @@ Data accessed from the Broad Institute DepMap portal (2018 release).
 ## Author
 
 Jacob Hoover
+
 **Bioinformatics & Computational Biology**
