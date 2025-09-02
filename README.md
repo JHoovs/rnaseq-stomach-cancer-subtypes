@@ -93,7 +93,8 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
    cd stomach-cancer-rnaseq-analysis
 
 2. Open R and install required packages:
-   ```r install.packages(c("tidyverse", "ggplot2", "patchwork"))
+   ```r
+   install.packages(c("tidyverse", "ggplot2", "patchwork"))
    BiocManager::install(c("DESeq2", "ComplexHeatmap", "biomaRt", "EnhancedVolcano"))
 
 4. Knit the RMarkdown (.Rmd) file or run the provided code chunks to reproduce results.
