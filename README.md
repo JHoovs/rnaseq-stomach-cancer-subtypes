@@ -67,25 +67,27 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
 
 ## 📂 Repository Structure  
 
+```bash
+.
 ├── data/
-│ ├── stomach_cell_line_ann.csv # Metadata for stomach cell lines
-│ └── stomach_cell_line_subset.csv # Stomach subset of RNA-seq counts
+│   ├── stomach_cell_line_ann.csv       # Metadata for stomach cell lines
+│   └── stomach_cell_line_subset.csv    # Stomach subset of RNA-seq counts
 │
-├── results/ # Output plots and figures
-│ ├── vst_normalization_plots.png
-│ ├── pca_plots.png
-│ ├── clustering_heatmaps.png
-│ ├── top_genes_deg.png
-│ └── top_lncrna_deg.png
+├── results/                            # Output plots and figures
+│   ├── vst_normalization_plots.png
+│   ├── pca_plots.png
+│   ├── clustering_heatmaps.png
+│   ├── top_genes_deg.png
+│   └── top_lncrna_deg.png
 │
-├── stomach-cancer-analysis.pdf # Full RMarkdown report (code + figures)
+├── stomach-cancer-analysis.pdf         # Full RMarkdown report (code + figures)
 └── README.md
 
 ## 🚀 How to Run  
 
 1. Clone the repository:  
    ```bash
-   git clone https://github.com/<your-username>/stomach-cancer-rnaseq-analysis.git
+   git clone https://github.com/JHoovs/stomach-cancer-rnaseq-analysis.git
    cd stomach-cancer-rnaseq-analysis
 
 2. Open R and install required packages:
@@ -95,8 +97,6 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
 3. Knit the RMarkdown (.Rmd) file or run the provided code chunks to reproduce results.
 
 ## 📌 Citation
-
-If you use this repository or adapt code for your own work, please cite the original data source:
 
 Barretina J, et al. (2012). The Cancer Cell Line Encyclopedia enables predictive modelling of anticancer drug sensitivity. Nature 483, 603–607.
 
