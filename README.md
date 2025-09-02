@@ -82,7 +82,7 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
 │
 ├── stomach-cancer-analysis.pdf         # Full RMarkdown report (code + figures)
 └── README.md
-bash'''
+'''
 
 ## 🚀 How to Run  
 
