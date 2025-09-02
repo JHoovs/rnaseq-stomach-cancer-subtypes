@@ -80,7 +80,8 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
 │   ├── top_genes_deg.png
 │   └── top_lncrna_deg.png
 │
-├── stomach-cancer-analysis.pdf         # Full RMarkdown report (code + figures)
+├── stomach-cancer-analysis.Rmd         # full analysis in RMarkdown (code - narrative- figures)
+├── stomach-cancer-analysis.pdf         # Rendered report for quick viewing
 └── README.md
 ```
 
@@ -92,10 +93,11 @@ These findings suggest opportunities for **biomarker discovery** and **therapeut
    cd stomach-cancer-rnaseq-analysis
 
 2. Open R and install required packages:
+   ```bash
   install.packages(c("tidyverse", "ggplot2", "patchwork"))
   BiocManager::install(c("DESeq2", "ComplexHeatmap", "biomaRt", "EnhancedVolcano"))
 
-3. Knit the RMarkdown (.Rmd) file or run the provided code chunks to reproduce results.
+4. Knit the RMarkdown (.Rmd) file or run the provided code chunks to reproduce results.
 
 ## 📌 Citation
 
